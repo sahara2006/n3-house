@@ -78,7 +78,11 @@ const message = computed(() => settlements.value.map((s, i) => `${[':one:', ':tw
 const userCandidates = computed(() => {
   const q = userQuery.value.trim().replace(/^@/, '').toLowerCase()
   if (!q) return []
-  return traqUsers.value.filter(u => !participants.value.some(p => p.id === u.id) && (u.name.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q))).slice(0, 8)
+  return traqUsers.value.filter(u => {
+    const name = u.name.toLowerCase()
+    const isSystemUser = name.startsWith('bot_') || name.startsWith('webhook_')
+    return !isSystemUser && !participants.value.some(p => p.id === u.id) && (name.includes(q) || u.displayName.toLowerCase().includes(q))
+  }).slice(0, 8)
 })
 
 async function loadTraqUsers() {
