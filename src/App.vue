@@ -17,6 +17,7 @@ const amount = ref<number | null>(null)
 const payerId = ref('')
 const beneficiaries = ref<string[]>([])
 const copied = ref(false)
+const confirmingExpenseClear = ref(false)
 const loggedIn = ref(Boolean(getAccessToken()))
 const authBusy = ref(false)
 const authError = ref('')
@@ -119,6 +120,16 @@ async function copyMessage() {
   copied.value = true; setTimeout(() => copied.value = false, 1800)
 }
 
+function requestClearExpenses() {
+  if (!confirmingExpenseClear.value) {
+    confirmingExpenseClear.value = true
+    window.setTimeout(() => { confirmingExpenseClear.value = false }, 4000)
+    return
+  }
+  expenses.value = []
+  confirmingExpenseClear.value = false
+}
+
 onMounted(async () => {
   const stored = localStorage.getItem('wari-data')
   if (stored) try {
@@ -195,7 +206,7 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
           </section>
 
           <section v-if="expenses.length" class="card compact">
-            <div class="section-head"><span class="step">03</span><div><h2>立替一覧</h2><p>{{ expenses.length }}件の支払い</p></div></div>
+            <div class="section-head"><span class="step">03</span><div><h2>立替一覧</h2><p>{{ expenses.length }}件の支払い</p></div><button class="clear-expenses" :class="{ confirming: confirmingExpenseClear }" @click="requestClearExpenses">{{ confirmingExpenseClear ? 'もう一度押して全削除' : '立替を全削除' }}</button></div>
             <div class="expense-list"><div v-for="e in expenses" :key="e.id"><div><strong>{{ e.title }}</strong><small>@{{ person(e.payerId)?.name }} が立替 · {{ e.participantIds.length }}人で負担</small></div><b>{{ money(e.amount) }}</b><button class="icon-btn" aria-label="立替を削除" @click="expenses = expenses.filter(x => x.id !== e.id)">×</button></div></div>
           </section>
         </div>
