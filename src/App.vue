@@ -80,7 +80,7 @@ const userCandidates = computed(() => {
   if (!q) return []
   return traqUsers.value.filter(u => {
     const name = u.name.toLowerCase()
-    const isSystemUser = name.startsWith('bot_') || name.startsWith('webhook_')
+    const isSystemUser = name.startsWith('bot_') || name.startsWith('webhook#')
     return !isSystemUser && !participants.value.some(p => p.id === u.id) && (name.includes(q) || u.displayName.toLowerCase().includes(q))
   }).slice(0, 8)
 })
@@ -156,13 +156,13 @@ function requestClearExpenses() {
 onMounted(async () => {
   const stored = localStorage.getItem('wari-data')
   if (stored) try {
-      const data = JSON.parse(stored)
-      if (data.participants?.length) participants.value = data.participants
-      if (Array.isArray(data.expenses)) expenses.value = data.expenses
-      if (data.rounding) rounding.value = data.rounding
-      payerId.value = participants.value[0]?.id ?? ''
-      beneficiaries.value = participants.value.map(p => p.id)
-    } catch { /* ignore invalid saved data */ }
+    const data = JSON.parse(stored)
+    if (data.participants?.length) participants.value = data.participants
+    if (Array.isArray(data.expenses)) expenses.value = data.expenses
+    if (data.rounding) rounding.value = data.rounding
+    payerId.value = participants.value[0]?.id ?? ''
+    beneficiaries.value = participants.value.map(p => p.id)
+  } catch { /* ignore invalid saved data */ }
   try {
     if (await finishTraqLogin()) loggedIn.value = true
     await loadTraqUsers()
@@ -177,7 +177,8 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
       <a class="brand" href="#"><span class="brand-mark">W</span><span>Wari</span></a>
       <div class="header-actions">
         <div class="saved"><span></span> この端末に自動保存</div>
-        <button v-if="!loggedIn" class="login-btn" :disabled="authBusy || !hasTraqConfig()" @click="beginTraqLogin">traQでログイン</button>
+        <button v-if="!loggedIn" class="login-btn" :disabled="authBusy || !hasTraqConfig()"
+          @click="beginTraqLogin">traQでログイン</button>
         <button v-else class="login-btn logged" @click="signOut">traQ 接続済み · ログアウト</button>
       </div>
     </header>
@@ -192,19 +193,28 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
       <div class="workspace">
         <div class="inputs">
           <section class="card">
-            <div class="section-head"><span class="step">01</span><div><h2>参加者</h2><p>一緒に割るメンバーを追加</p></div><span class="count">{{ participants.length }}人</span></div>
+            <div class="section-head"><span class="step">01</span>
+              <div>
+                <h2>参加者</h2>
+                <p>一緒に割るメンバーを追加</p>
+              </div><span class="count">{{ participants.length }}人</span>
+            </div>
             <div v-if="participants.length" class="people">
               <div v-for="p in participants" :key="p.id" class="person-row">
                 <span class="avatar">{{ p.displayName.slice(0, 1).toUpperCase() }}</span>
                 <div><strong>{{ p.displayName }}</strong><small>@{{ p.name }}</small></div>
-                <button class="icon-btn" :disabled="participants.length === 1" :aria-label="`${p.name}を削除`" @click="removeParticipant(p.id)">×</button>
+                <button class="icon-btn" :disabled="participants.length === 1" :aria-label="`${p.name}を削除`"
+                  @click="removeParticipant(p.id)">×</button>
               </div>
             </div>
             <div v-else class="empty-people">まだ参加者はいません。traQから検索するか、traP IDを入力して追加してください。</div>
             <div v-if="loggedIn" class="traq-search">
-              <label><span>traQユーザーから検索</span><input v-model="userQuery" placeholder="traP ID または表示名" autocomplete="off"></label>
+              <label><span>traQユーザーから検索</span><input v-model="userQuery" placeholder="traP ID または表示名"
+                  autocomplete="off"></label>
               <div v-if="userCandidates.length" class="candidate-list">
-                <button v-for="u in userCandidates" :key="u.id" type="button" @click="addTraqUser(u)"><span class="avatar">{{ u.displayName.slice(0, 1).toUpperCase() }}</span><span><strong>{{ u.displayName }}</strong><small>@{{ u.name }}</small></span><b>＋</b></button>
+                <button v-for="u in userCandidates" :key="u.id" type="button" @click="addTraqUser(u)"><span
+                    class="avatar">{{ u.displayName.slice(0, 1).toUpperCase() }}</span><span><strong>{{ u.displayName
+                      }}</strong><small>@{{ u.name }}</small></span><b>＋</b></button>
               </div>
             </div>
             <p v-if="authError" class="error">{{ authError }}</p>
@@ -217,52 +227,104 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
           </section>
 
           <section class="card">
-            <div class="section-head"><span class="step">02</span><div><h2>立替を追加</h2><p>支払いごとに入力</p></div></div>
+            <div class="section-head"><span class="step">02</span>
+              <div>
+                <h2>立替を追加</h2>
+                <p>支払いごとに入力</p>
+              </div>
+            </div>
             <form class="expense-form" @submit.prevent="addExpense">
               <label class="wide"><span>支払名</span><input v-model="title" placeholder="例: 東急ストア"></label>
-              <label><span>金額</span><div class="yen-input"><input v-model.number="amount" type="number" min="1" step="1" placeholder="0"><b>円</b></div></label>
-              <label><span>立替者</span><select v-model="payerId" :disabled="!participants.length"><option v-if="!participants.length" value="">参加者を先に追加</option><option v-for="p in participants" :key="p.id" :value="p.id">@{{ p.name }}</option></select></label>
-              <fieldset class="wide"><legend>負担する人</legend><div class="chips"><button v-for="p in participants" :key="p.id" type="button" :class="{ active: beneficiaries.includes(p.id) }" @click="toggleBeneficiary(p.id)"><span>✓</span> @{{ p.name }}</button></div></fieldset>
-              <fieldset v-if="beneficiaries.length > 1" class="wide discount-field"><legend>人ごとの割引 <small>割引分はほかの負担者に配分</small></legend><div class="discount-grid"><label v-for="id in beneficiaries" :key="id"><span>@{{ person(id)?.name }}</span><div class="yen-input"><input v-model.number="draftDiscounts[id]" type="number" min="0" :max="amount ?? undefined" step="1" placeholder="0"><b>円</b></div></label></div></fieldset>
+              <label><span>金額</span>
+                <div class="yen-input"><input v-model.number="amount" type="number" min="1" step="1"
+                    placeholder="0"><b>円</b></div>
+              </label>
+              <label><span>立替者</span><select v-model="payerId" :disabled="!participants.length">
+                  <option v-if="!participants.length" value="">参加者を先に追加</option>
+                  <option v-for="p in participants" :key="p.id" :value="p.id">@{{ p.name }}</option>
+                </select></label>
+              <fieldset class="wide">
+                <legend>負担する人</legend>
+                <div class="chips"><button v-for="p in participants" :key="p.id" type="button"
+                    :class="{ active: beneficiaries.includes(p.id) }" @click="toggleBeneficiary(p.id)"><span>✓</span>
+                    @{{ p.name }}</button></div>
+              </fieldset>
+              <fieldset v-if="beneficiaries.length > 1" class="wide discount-field">
+                <legend>人ごとの割引 <small>割引分はほかの負担者に配分</small></legend>
+                <div class="discount-grid"><label v-for="id in beneficiaries" :key="id"><span>@{{ person(id)?.name
+                      }}</span>
+                    <div class="yen-input"><input v-model.number="draftDiscounts[id]" type="number" min="0"
+                        :max="amount ?? undefined" step="1" placeholder="0"><b>円</b></div>
+                  </label></div>
+              </fieldset>
               <button class="primary wide" type="submit">立替を追加する <span>→</span></button>
             </form>
             <p v-if="errors.expense" class="error">{{ errors.expense }}</p>
           </section>
 
           <section v-if="expenses.length" class="card compact">
-            <div class="section-head"><span class="step">03</span><div><h2>立替一覧</h2><p>{{ expenses.length }}件の支払い</p></div><button class="clear-expenses" :class="{ confirming: confirmingExpenseClear }" @click="requestClearExpenses">{{ confirmingExpenseClear ? 'もう一度押して全削除' : '立替を全削除' }}</button></div>
-            <div class="expense-list"><div v-for="e in expenses" :key="e.id"><div><strong>{{ e.title }}</strong><small>@{{ person(e.payerId)?.name }} が立替 · {{ e.participantIds.length }}人で負担<span v-if="Object.values(e.discounts ?? {}).some(Boolean)"> · 割引あり</span></small></div><b>{{ money(e.amount) }}</b><button class="icon-btn" aria-label="立替を削除" @click="expenses = expenses.filter(x => x.id !== e.id)">×</button></div></div>
+            <div class="section-head"><span class="step">03</span>
+              <div>
+                <h2>立替一覧</h2>
+                <p>{{ expenses.length }}件の支払い</p>
+              </div><button class="clear-expenses" :class="{ confirming: confirmingExpenseClear }"
+                @click="requestClearExpenses">{{ confirmingExpenseClear ? 'もう一度押して全削除' : '立替を全削除' }}</button>
+            </div>
+            <div class="expense-list">
+              <div v-for="e in expenses" :key="e.id">
+                <div><strong>{{ e.title }}</strong><small>@{{ person(e.payerId)?.name }} が立替 · {{
+                  e.participantIds.length }}人で負担<span v-if="Object.values(e.discounts ?? {}).some(Boolean)"> ·
+                      割引あり</span></small></div><b>{{ money(e.amount) }}</b><button class="icon-btn" aria-label="立替を削除"
+                  @click="expenses = expenses.filter(x => x.id !== e.id)">×</button>
+              </div>
+            </div>
           </section>
         </div>
 
         <aside>
           <section class="result-card">
-            <div class="result-top"><div><span>支払総額</span><strong>{{ total.toLocaleString('ja-JP') }}<small>円</small></strong></div><div><span>精算</span><b>{{ settlements.length }}件</b></div></div>
-            <div class="rounding"><span>丸め設定</span><div><button :class="{active: rounding === 'none'}" @click="rounding = 'none'">なし</button><button :class="{active: rounding === 'ceil10'}" @click="rounding = 'ceil10'">10円↑</button><button :class="{active: rounding === 'floor10'}" @click="rounding = 'floor10'">10円↓</button></div></div>
-            <div class="settle-title"><h2>精算方法</h2><span>最小の送金回数</span></div>
+            <div class="result-top">
+              <div><span>支払総額</span><strong>{{ total.toLocaleString('ja-JP') }}<small>円</small></strong></div>
+              <div><span>精算</span><b>{{ settlements.length }}件</b></div>
+            </div>
+            <div class="rounding"><span>丸め設定</span>
+              <div><button :class="{ active: rounding === 'none' }" @click="rounding = 'none'">なし</button><button
+                  :class="{ active: rounding === 'ceil10' }" @click="rounding = 'ceil10'">10円↑</button><button
+                  :class="{ active: rounding === 'floor10' }" @click="rounding = 'floor10'">10円↓</button></div>
+            </div>
+            <div class="settle-title">
+              <h2>精算方法</h2><span>最小の送金回数</span>
+            </div>
             <div v-if="settlements.length" class="settlements">
               <div v-for="(s, i) in settlements" :key="`${s.from}-${s.to}`" class="settlement">
                 <span class="number">{{ String(i + 1).padStart(2, '0') }}</span>
-                <div class="flow"><strong>@{{ person(s.from)?.name }}</strong><span><i></i>送る →</span><strong>@{{ person(s.to)?.name }}</strong></div>
+                <div class="flow"><strong>@{{ person(s.from)?.name }}</strong><span><i></i>送る →</span><strong>@{{
+                    person(s.to)?.name }}</strong></div>
                 <b>{{ money(s.amount) }}</b>
               </div>
             </div>
             <div v-else class="empty">精算はありません</div>
-            <button class="copy" :disabled="!settlements.length" @click="copyMessage">{{ copied ? 'コピーしました ✓' : 'traQ用メッセージをコピー' }}</button>
+            <button class="copy" :disabled="!settlements.length" @click="copyMessage">{{ copied ? 'コピーしました ✓' :
+              'traQ用メッセージをコピー' }}</button>
             <p class="privacy">● データはブラウザ内だけに保存されます</p>
           </section>
 
           <section class="balances">
-            <div class="settle-title"><h2>メンバー別</h2><span>負担 / 立替 / 収支</span></div>
+            <div class="settle-title">
+              <h2>メンバー別</h2><span>負担 / 立替 / 収支</span>
+            </div>
             <div v-for="r in results" :key="r.id" class="balance-row">
               <span class="avatar small">{{ r.displayName.slice(0, 1).toUpperCase() }}</span>
               <div><strong>@{{ r.name }}</strong><small>{{ money(r.burden) }} / {{ money(r.paid) }}</small></div>
-              <b :class="r.balance > 0 ? 'positive' : r.balance < 0 ? 'negative' : ''">{{ r.balance > 0 ? '+' : r.balance < 0 ? '−' : '' }}{{ money(r.balance) }}</b>
+              <b :class="r.balance > 0 ? 'positive' : r.balance < 0 ? 'negative' : ''">{{ r.balance > 0 ? '+' :
+                r.balance < 0 ? '−' : '' }}{{ money(r.balance) }}</b>
             </div>
           </section>
         </aside>
       </div>
     </main>
-    <footer><span>Wari</span><p>割り勘を、もっと気持ちよく。</p><small>LOCAL FIRST · NO DATA SENT</small></footer>
+    <footer><span>Wari</span>
+      <p>割り勘を、もっと気持ちよく。</p><small>LOCAL FIRST · NO DATA SENT</small>
+    </footer>
   </div>
 </template>
