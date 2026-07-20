@@ -244,5 +244,5 @@ type Settlement = {
 - [ ] 合計金額表示
 - [ ] 各参加者の収支計算
 - [ ] 最小送金計算
-- [ ] Discordメッセージ生成
+- [ ] traQメッセージ生成
 - [ ] localStorage保存
