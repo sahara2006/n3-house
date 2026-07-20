@@ -53,7 +53,7 @@ export async function finishTraqLogin() {
   const token = await response.json() as TokenResponse
   sessionStorage.setItem('traq_access_token', token.access_token)
   sessionStorage.removeItem('traq_pkce_verifier'); sessionStorage.removeItem('traq_oauth_state')
-  history.replaceState({}, '', '/')
+  history.replaceState({}, '', import.meta.env.BASE_URL)
   return true
 }
 

@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { beginTraqLogin, fetchTraqUsers, finishTraqLogin, getAccessToken, hasTraqConfig, logoutTraq, type TraqUser } from './traq'
 
 type Participant = { id: string; name: string; displayName: string }
-type Expense = { id: string; title: string; amount: number; payerId: string; participantIds: string[] }
+type Expense = { id: string; title: string; amount: number; payerId: string; participantIds: string[]; discounts?: Record<string, number> }
 type Rounding = 'none' | 'ceil10' | 'floor10'
 type Settlement = { from: string; to: string; amount: number }
 
@@ -16,6 +16,7 @@ const title = ref('')
 const amount = ref<number | null>(null)
 const payerId = ref('')
 const beneficiaries = ref<string[]>([])
+const draftDiscounts = ref<Record<string, number>>({})
 const copied = ref(false)
 const confirmingExpenseClear = ref(false)
 const loggedIn = ref(Boolean(getAccessToken()))
@@ -29,16 +30,30 @@ const money = (n: number) => `${Math.abs(n).toLocaleString('ja-JP')}円`
 const person = (id: string) => participants.value.find(p => p.id === id)
 const roundedShare = (value: number) => rounding.value === 'ceil10' ? Math.ceil(value / 10) * 10 : rounding.value === 'floor10' ? Math.floor(value / 10) * 10 : value
 
+function expenseShares(e: Expense) {
+  const ids = e.participantIds
+  const share = Math.round(roundedShare(e.amount / ids.length))
+  const shares: Record<string, number> = Object.fromEntries(ids.map(id => [id, share]))
+  shares[e.payerId] = (shares[e.payerId] ?? 0) + e.amount - share * ids.length
+  if (ids.length > 1) for (const [targetId, rawDiscount] of Object.entries(e.discounts ?? {})) {
+    if (!ids.includes(targetId)) continue
+    const discount = Math.max(0, Math.min(Math.floor(rawDiscount), shares[targetId]))
+    if (!discount) continue
+    shares[targetId] -= discount
+    const others = ids.filter(id => id !== targetId).sort((a, b) => Number(b === e.payerId) - Number(a === e.payerId))
+    const each = Math.floor(discount / others.length)
+    let remainder = discount % others.length
+    for (const id of others) shares[id] += each + (remainder-- > 0 ? 1 : 0)
+  }
+  return shares
+}
+
 const results = computed(() => participants.value.map(p => {
   let burden = 0
   let paid = 0
   for (const e of expenses.value) {
     if (e.payerId === p.id) paid += e.amount
-    if (e.participantIds.includes(p.id)) {
-      const raw = e.amount / e.participantIds.length
-      const share = roundedShare(raw)
-      burden += p.id === e.payerId ? e.amount - share * (e.participantIds.length - 1) : share
-    }
+    burden += expenseShares(e)[p.id] ?? 0
   }
   return { ...p, burden: Math.round(burden), paid, balance: Math.round(paid - burden) }
 }))
@@ -103,15 +118,19 @@ function removeParticipant(id: string) {
 }
 
 function toggleBeneficiary(id: string) {
-  beneficiaries.value = beneficiaries.value.includes(id) ? beneficiaries.value.filter(x => x !== id) : [...beneficiaries.value, id]
+  if (beneficiaries.value.includes(id)) {
+    beneficiaries.value = beneficiaries.value.filter(x => x !== id)
+    delete draftDiscounts.value[id]
+  } else beneficiaries.value = [...beneficiaries.value, id]
 }
 
 function addExpense() {
   if (!title.value.trim()) return errors.value.expense = '支払名を入力してください'
   if (!Number.isInteger(amount.value) || (amount.value ?? 0) < 1) return errors.value.expense = '1円以上の整数を入力してください'
   if (!payerId.value || beneficiaries.value.length === 0) return errors.value.expense = '立替者と負担者を選んでください'
-  expenses.value.push({ id: crypto.randomUUID(), title: title.value.trim(), amount: amount.value!, payerId: payerId.value, participantIds: [...beneficiaries.value] })
-  title.value = ''; amount.value = null; errors.value.expense = ''
+  const discounts = Object.fromEntries(Object.entries(draftDiscounts.value).filter(([id, value]) => beneficiaries.value.includes(id) && value > 0).map(([id, value]) => [id, Math.floor(value)]))
+  expenses.value.push({ id: crypto.randomUUID(), title: title.value.trim(), amount: amount.value!, payerId: payerId.value, participantIds: [...beneficiaries.value], discounts })
+  title.value = ''; amount.value = null; draftDiscounts.value = {}; errors.value.expense = ''
 }
 
 async function copyMessage() {
@@ -196,10 +215,11 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
           <section class="card">
             <div class="section-head"><span class="step">02</span><div><h2>立替を追加</h2><p>支払いごとに入力</p></div></div>
             <form class="expense-form" @submit.prevent="addExpense">
-              <label class="wide"><span>支払名</span><input v-model="title" placeholder="例: 飲み会"></label>
+              <label class="wide"><span>支払名</span><input v-model="title" placeholder="例: 東急ストア"></label>
               <label><span>金額</span><div class="yen-input"><input v-model.number="amount" type="number" min="1" step="1" placeholder="0"><b>円</b></div></label>
               <label><span>立替者</span><select v-model="payerId" :disabled="!participants.length"><option v-if="!participants.length" value="">参加者を先に追加</option><option v-for="p in participants" :key="p.id" :value="p.id">@{{ p.name }}</option></select></label>
               <fieldset class="wide"><legend>負担する人</legend><div class="chips"><button v-for="p in participants" :key="p.id" type="button" :class="{ active: beneficiaries.includes(p.id) }" @click="toggleBeneficiary(p.id)"><span>✓</span> @{{ p.name }}</button></div></fieldset>
+              <fieldset v-if="beneficiaries.length > 1" class="wide discount-field"><legend>人ごとの割引 <small>割引分はほかの負担者に配分</small></legend><div class="discount-grid"><label v-for="id in beneficiaries" :key="id"><span>@{{ person(id)?.name }}</span><div class="yen-input"><input v-model.number="draftDiscounts[id]" type="number" min="0" :max="amount ?? undefined" step="1" placeholder="0"><b>円</b></div></label></div></fieldset>
               <button class="primary wide" type="submit">立替を追加する <span>→</span></button>
             </form>
             <p v-if="errors.expense" class="error">{{ errors.expense }}</p>
@@ -207,7 +227,7 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
 
           <section v-if="expenses.length" class="card compact">
             <div class="section-head"><span class="step">03</span><div><h2>立替一覧</h2><p>{{ expenses.length }}件の支払い</p></div><button class="clear-expenses" :class="{ confirming: confirmingExpenseClear }" @click="requestClearExpenses">{{ confirmingExpenseClear ? 'もう一度押して全削除' : '立替を全削除' }}</button></div>
-            <div class="expense-list"><div v-for="e in expenses" :key="e.id"><div><strong>{{ e.title }}</strong><small>@{{ person(e.payerId)?.name }} が立替 · {{ e.participantIds.length }}人で負担</small></div><b>{{ money(e.amount) }}</b><button class="icon-btn" aria-label="立替を削除" @click="expenses = expenses.filter(x => x.id !== e.id)">×</button></div></div>
+            <div class="expense-list"><div v-for="e in expenses" :key="e.id"><div><strong>{{ e.title }}</strong><small>@{{ person(e.payerId)?.name }} が立替 · {{ e.participantIds.length }}人で負担<span v-if="Object.values(e.discounts ?? {}).some(Boolean)"> · 割引あり</span></small></div><b>{{ money(e.amount) }}</b><button class="icon-btn" aria-label="立替を削除" @click="expenses = expenses.filter(x => x.id !== e.id)">×</button></div></div>
           </section>
         </div>
 
