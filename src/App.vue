@@ -19,6 +19,7 @@ const amount = ref<number | null>(null)
 const payerId = ref('')
 const beneficiaries = ref<string[]>([])
 const draftDiscounts = ref<Record<string, number>>({})
+const showDiscounts = ref(false)
 const copied = ref(false)
 const confirmingExpenseClear = ref(false)
 const editingBreakdownId = ref<string | null>(null)
@@ -195,7 +196,7 @@ function addExpense() {
   if (!payerId.value || beneficiaries.value.length === 0) return errors.value.expense = '立替者と負担者を選んでください'
   const discounts = Object.fromEntries(Object.entries(draftDiscounts.value).filter(([id, value]) => beneficiaries.value.includes(id) && value > 0).map(([id, value]) => [id, Math.floor(value)]))
   expenses.value.push({ id: crypto.randomUUID(), title: title.value.trim(), amount: amount.value!, payerId: payerId.value, participantIds: [...beneficiaries.value], discounts })
-  title.value = ''; amount.value = null; draftDiscounts.value = {}; errors.value.expense = ''
+  title.value = ''; amount.value = null; draftDiscounts.value = {}; showDiscounts.value = false; errors.value.expense = ''
 }
 
 async function copyMessage() {
@@ -310,7 +311,8 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
                     :class="{ active: beneficiaries.includes(p.id) }" @click="toggleBeneficiary(p.id)"><span>✓</span>
                     @{{ p.name }}</button></div>
               </fieldset>
-              <fieldset v-if="beneficiaries.length > 1" class="wide discount-field">
+              <div v-if="beneficiaries.length > 1" class="wide optional-actions"><button class="breakdown-btn" type="button" @click="showDiscounts = !showDiscounts">{{ showDiscounts ? '割引を閉じる' : '割引' }}</button></div>
+              <fieldset v-if="beneficiaries.length > 1 && showDiscounts" class="wide discount-field">
                 <legend>人ごとの割引 <small>割引分はほかの負担者に配分</small></legend>
                 <div class="discount-grid"><label v-for="id in beneficiaries" :key="id"><span>@{{ person(id)?.name
                       }}</span>
