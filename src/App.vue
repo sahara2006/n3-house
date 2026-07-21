@@ -3,7 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { beginTraqLogin, fetchTraqUsers, finishTraqLogin, getAccessToken, hasTraqConfig, logoutTraq, type TraqUser } from './traq'
 
 type Participant = { id: string; name: string; displayName: string }
-type Expense = { id: string; title: string; amount: number; payerId: string; participantIds: string[]; discounts?: Record<string, number> }
+type Breakdown = { id: string; title: string; amount: number; participantIds: string[] }
+type Expense = { id: string; title: string; amount: number; payerId: string; participantIds: string[]; discounts?: Record<string, number>; breakdowns?: Breakdown[] }
 type Rounding = 'none' | 'ceil10' | 'floor10'
 type Settlement = { from: string; to: string; amount: number }
 
@@ -19,6 +20,11 @@ const beneficiaries = ref<string[]>([])
 const draftDiscounts = ref<Record<string, number>>({})
 const copied = ref(false)
 const confirmingExpenseClear = ref(false)
+const editingBreakdownId = ref<string | null>(null)
+const breakdownTitle = ref('')
+const breakdownAmount = ref<number | null>(null)
+const breakdownParticipants = ref<string[]>([])
+const breakdownError = ref('')
 const loggedIn = ref(Boolean(getAccessToken()))
 const authBusy = ref(false)
 const authError = ref('')
@@ -30,20 +36,32 @@ const money = (n: number) => `${Math.abs(n).toLocaleString('ja-JP')}円`
 const person = (id: string) => participants.value.find(p => p.id === id)
 const roundedShare = (value: number) => rounding.value === 'ceil10' ? Math.ceil(value / 10) * 10 : rounding.value === 'floor10' ? Math.floor(value / 10) * 10 : value
 
-function expenseShares(e: Expense) {
-  const ids = e.participantIds
-  const share = Math.round(roundedShare(e.amount / ids.length))
+function splitShares(amount: number, ids: string[], payerId: string, discounts: Record<string, number> = {}) {
+  if (!ids.length || amount <= 0) return {} as Record<string, number>
+  const share = Math.round(roundedShare(amount / ids.length))
   const shares: Record<string, number> = Object.fromEntries(ids.map(id => [id, share]))
-  shares[e.payerId] = (shares[e.payerId] ?? 0) + e.amount - share * ids.length
-  if (ids.length > 1) for (const [targetId, rawDiscount] of Object.entries(e.discounts ?? {})) {
+  shares[payerId] = (shares[payerId] ?? 0) + amount - share * ids.length
+  if (ids.length > 1) for (const [targetId, rawDiscount] of Object.entries(discounts)) {
     if (!ids.includes(targetId)) continue
     const discount = Math.max(0, Math.min(Math.floor(rawDiscount), shares[targetId]))
     if (!discount) continue
     shares[targetId] -= discount
-    const others = ids.filter(id => id !== targetId).sort((a, b) => Number(b === e.payerId) - Number(a === e.payerId))
+    const others = ids.filter(id => id !== targetId).sort((a, b) => Number(b === payerId) - Number(a === payerId))
     const each = Math.floor(discount / others.length)
     let remainder = discount % others.length
     for (const id of others) shares[id] += each + (remainder-- > 0 ? 1 : 0)
+  }
+  return shares
+}
+
+const breakdownTotal = (e: Expense) => (e.breakdowns ?? []).reduce((sum, item) => sum + item.amount, 0)
+const breakdownRemaining = (e: Expense) => e.amount - breakdownTotal(e)
+
+function expenseShares(e: Expense) {
+  const shares = splitShares(breakdownRemaining(e), e.participantIds, e.payerId, e.discounts)
+  for (const item of e.breakdowns ?? []) {
+    const itemShares = splitShares(item.amount, item.participantIds, e.payerId)
+    for (const [id, value] of Object.entries(itemShares)) shares[id] = (shares[id] ?? 0) + value
   }
   return shares
 }
@@ -117,8 +135,43 @@ function removeParticipant(id: string) {
   if (participants.value.length === 1) return
   participants.value = participants.value.filter(p => p.id !== id)
   beneficiaries.value = beneficiaries.value.filter(x => x !== id)
-  expenses.value = expenses.value.filter(e => e.payerId !== id).map(e => ({ ...e, participantIds: e.participantIds.filter(x => x !== id) })).filter(e => e.participantIds.length)
+  expenses.value = expenses.value.filter(e => e.payerId !== id).map(e => ({ ...e, participantIds: e.participantIds.filter(x => x !== id), breakdowns: (e.breakdowns ?? []).map(item => ({ ...item, participantIds: item.participantIds.filter(x => x !== id) })).filter(item => item.participantIds.length) })).filter(e => e.participantIds.length)
   if (payerId.value === id) payerId.value = participants.value[0]?.id ?? ''
+}
+
+function openBreakdown(e: Expense) {
+  if (editingBreakdownId.value === e.id) return closeBreakdown()
+  editingBreakdownId.value = e.id
+  breakdownTitle.value = ''
+  breakdownAmount.value = null
+  breakdownParticipants.value = [...e.participantIds]
+  breakdownError.value = ''
+}
+
+function closeBreakdown() {
+  editingBreakdownId.value = null
+  breakdownError.value = ''
+}
+
+function toggleBreakdownParticipant(id: string) {
+  breakdownParticipants.value = breakdownParticipants.value.includes(id)
+    ? breakdownParticipants.value.filter(x => x !== id)
+    : [...breakdownParticipants.value, id]
+}
+
+function addBreakdown(e: Expense) {
+  const remaining = breakdownRemaining(e)
+  if (!breakdownTitle.value.trim()) return breakdownError.value = '内訳名を入力してください'
+  if (!Number.isInteger(breakdownAmount.value) || (breakdownAmount.value ?? -1) < 0 || (breakdownAmount.value ?? 0) > remaining) return breakdownError.value = `金額は0〜${remaining.toLocaleString('ja-JP')}円で入力してください`
+  if (!breakdownParticipants.value.length) return breakdownError.value = '負担者を1人以上選んでください'
+  e.breakdowns = [...(e.breakdowns ?? []), { id: crypto.randomUUID(), title: breakdownTitle.value.trim(), amount: breakdownAmount.value!, participantIds: [...breakdownParticipants.value] }]
+  breakdownTitle.value = ''
+  breakdownAmount.value = null
+  breakdownError.value = ''
+}
+
+function removeBreakdown(e: Expense, id: string) {
+  e.breakdowns = (e.breakdowns ?? []).filter(item => item.id !== id)
 }
 
 function toggleBeneficiary(id: string) {
@@ -271,11 +324,29 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
                 @click="requestClearExpenses">{{ confirmingExpenseClear ? 'もう一度押して全削除' : '立替を全削除' }}</button>
             </div>
             <div class="expense-list">
-              <div v-for="e in expenses" :key="e.id">
-                <div><strong>{{ e.title }}</strong><small>@{{ person(e.payerId)?.name }} が立替 · {{
+              <div v-for="e in expenses" :key="e.id" class="expense-entry">
+                <div class="expense-summary"><div><strong>{{ e.title }}</strong><small>@{{ person(e.payerId)?.name }} が立替 · {{
                   e.participantIds.length }}人で負担<span v-if="Object.values(e.discounts ?? {}).some(Boolean)"> ·
-                      割引あり</span></small></div><b>{{ money(e.amount) }}</b><button class="icon-btn" aria-label="立替を削除"
-                  @click="expenses = expenses.filter(x => x.id !== e.id)">×</button>
+                      割引あり</span></small></div><b>{{ money(e.amount) }}</b>
+                  <button class="breakdown-btn" type="button" @click="openBreakdown(e)">{{ editingBreakdownId === e.id ? '閉じる' : '内訳' }}</button>
+                  <button class="icon-btn" aria-label="立替を削除" @click="expenses = expenses.filter(x => x.id !== e.id)">×</button></div>
+                <div v-if="(e.breakdowns ?? []).length" class="breakdown-list">
+                  <div v-for="item in e.breakdowns" :key="item.id">
+                    <span><strong>{{ item.title }}</strong><small>{{ item.participantIds.map(id => `@${person(id)?.name}`).join('、') }}</small></span>
+                    <b>{{ money(item.amount) }}</b>
+                    <button class="icon-btn" type="button" aria-label="内訳を削除" @click="removeBreakdown(e, item.id)">×</button>
+                  </div>
+                  <p>元の配分に残る金額 <b>{{ money(breakdownRemaining(e)) }}</b></p>
+                </div>
+                <form v-if="editingBreakdownId === e.id" class="breakdown-form" @submit.prevent="addBreakdown(e)">
+                  <div class="breakdown-fields">
+                    <label><span>内訳名</span><input v-model="breakdownTitle" placeholder="例: お酒代"></label>
+                    <label><span>金額（残り {{ money(breakdownRemaining(e)) }}）</span><div class="yen-input"><input v-model.number="breakdownAmount" type="number" min="0" :max="breakdownRemaining(e)" step="1" placeholder="0"><b>円</b></div></label>
+                  </div>
+                  <fieldset><legend>負担する人</legend><div class="chips"><button v-for="p in participants" :key="p.id" type="button" :class="{ active: breakdownParticipants.includes(p.id) }" @click="toggleBreakdownParticipant(p.id)"><span>✓</span> @{{ p.name }}</button></div></fieldset>
+                  <p v-if="breakdownError" class="error">{{ breakdownError }}</p>
+                  <button class="secondary" type="submit">＋ 内訳を追加</button>
+                </form>
               </div>
             </div>
           </section>
