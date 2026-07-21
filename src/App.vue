@@ -3,7 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { beginTraqLogin, fetchTraqUsers, finishTraqLogin, getAccessToken, hasTraqConfig, logoutTraq, type TraqUser } from './traq'
 
 type Participant = { id: string; name: string; displayName: string }
-type Breakdown = { id: string; title: string; amount: number; participantIds: string[] }
+type TaxRate = 8 | 10
+type Breakdown = { id: string; title: string; amount: number; netAmount?: number; participantIds: string[]; taxRate?: TaxRate }
 type Expense = { id: string; title: string; amount: number; payerId: string; participantIds: string[]; discounts?: Record<string, number>; breakdowns?: Breakdown[] }
 type Rounding = 'none' | 'ceil10' | 'floor10'
 type Settlement = { from: string; to: string; amount: number }
@@ -24,6 +25,7 @@ const editingBreakdownId = ref<string | null>(null)
 const breakdownTitle = ref('')
 const breakdownAmount = ref<number | null>(null)
 const breakdownParticipants = ref<string[]>([])
+const breakdownTaxRate = ref<TaxRate | null>(null)
 const breakdownError = ref('')
 const loggedIn = ref(Boolean(getAccessToken()))
 const authBusy = ref(false)
@@ -35,6 +37,8 @@ const errors = ref({ participant: '', expense: '' })
 const money = (n: number) => `${Math.abs(n).toLocaleString('ja-JP')}円`
 const person = (id: string) => participants.value.find(p => p.id === id)
 const roundedShare = (value: number) => rounding.value === 'ceil10' ? Math.ceil(value / 10) * 10 : rounding.value === 'floor10' ? Math.floor(value / 10) * 10 : value
+const taxIncluded = (net: number, rate: TaxRate | null) => net + (rate ? Math.floor(net * rate / 100) : 0)
+const draftTaxIncluded = computed(() => taxIncluded(Number.isInteger(breakdownAmount.value) ? breakdownAmount.value! : 0, breakdownTaxRate.value))
 
 function splitShares(amount: number, ids: string[], payerId: string, discounts: Record<string, number> = {}) {
   if (!ids.length || amount <= 0) return {} as Record<string, number>
@@ -56,6 +60,7 @@ function splitShares(amount: number, ids: string[], payerId: string, discounts: 
 
 const breakdownTotal = (e: Expense) => (e.breakdowns ?? []).reduce((sum, item) => sum + item.amount, 0)
 const breakdownRemaining = (e: Expense) => e.amount - breakdownTotal(e)
+const taxExcluded = (item: Breakdown) => item.netAmount ?? (item.taxRate ? Math.ceil(item.amount * 100 / (100 + item.taxRate)) : item.amount)
 
 function expenseShares(e: Expense) {
   const shares = splitShares(breakdownRemaining(e), e.participantIds, e.payerId, e.discounts)
@@ -145,6 +150,7 @@ function openBreakdown(e: Expense) {
   breakdownTitle.value = ''
   breakdownAmount.value = null
   breakdownParticipants.value = [...e.participantIds]
+  breakdownTaxRate.value = null
   breakdownError.value = ''
 }
 
@@ -162,9 +168,11 @@ function toggleBreakdownParticipant(id: string) {
 function addBreakdown(e: Expense) {
   const remaining = breakdownRemaining(e)
   if (!breakdownTitle.value.trim()) return breakdownError.value = '内訳名を入力してください'
-  if (!Number.isInteger(breakdownAmount.value) || (breakdownAmount.value ?? -1) < 0 || (breakdownAmount.value ?? 0) > remaining) return breakdownError.value = `金額は0〜${remaining.toLocaleString('ja-JP')}円で入力してください`
+  if (!Number.isInteger(breakdownAmount.value) || (breakdownAmount.value ?? -1) < 0) return breakdownError.value = '税抜金額は0円以上の整数で入力してください'
+  const grossAmount = taxIncluded(breakdownAmount.value!, breakdownTaxRate.value)
+  if (grossAmount > remaining) return breakdownError.value = `税込金額${money(grossAmount)}が残額${money(remaining)}を超えています`
   if (!breakdownParticipants.value.length) return breakdownError.value = '負担者を1人以上選んでください'
-  e.breakdowns = [...(e.breakdowns ?? []), { id: crypto.randomUUID(), title: breakdownTitle.value.trim(), amount: breakdownAmount.value!, participantIds: [...breakdownParticipants.value] }]
+  e.breakdowns = [...(e.breakdowns ?? []), { id: crypto.randomUUID(), title: breakdownTitle.value.trim(), amount: grossAmount, netAmount: breakdownAmount.value!, participantIds: [...breakdownParticipants.value], ...(breakdownTaxRate.value ? { taxRate: breakdownTaxRate.value } : {}) }]
   breakdownTitle.value = ''
   breakdownAmount.value = null
   breakdownError.value = ''
@@ -332,8 +340,8 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
                   <button class="icon-btn" aria-label="立替を削除" @click="expenses = expenses.filter(x => x.id !== e.id)">×</button></div>
                 <div v-if="(e.breakdowns ?? []).length" class="breakdown-list">
                   <div v-for="item in e.breakdowns" :key="item.id">
-                    <span><strong>{{ item.title }}</strong><small>{{ item.participantIds.map(id => `@${person(id)?.name}`).join('、') }}</small></span>
-                    <b>{{ money(item.amount) }}</b>
+                    <span><strong>{{ item.title }} <i v-if="item.taxRate" class="tax-label">税率{{ item.taxRate }}%</i></strong><small>{{ item.participantIds.map(id => `@${person(id)?.name}`).join('、') }}</small></span>
+                    <span class="breakdown-price"><small v-if="item.taxRate">税抜 {{ money(taxExcluded(item)) }}</small><b>{{ money(item.amount) }}</b></span>
                     <button class="icon-btn" type="button" aria-label="内訳を削除" @click="removeBreakdown(e, item.id)">×</button>
                   </div>
                   <p>元の配分に残る金額 <b>{{ money(breakdownRemaining(e)) }}</b></p>
@@ -341,8 +349,9 @@ watch([participants, expenses, rounding], () => localStorage.setItem('wari-data'
                 <form v-if="editingBreakdownId === e.id" class="breakdown-form" @submit.prevent="addBreakdown(e)">
                   <div class="breakdown-fields">
                     <label><span>内訳名</span><input v-model="breakdownTitle" placeholder="例: お酒代"></label>
-                    <label><span>金額（残り {{ money(breakdownRemaining(e)) }}）</span><div class="yen-input"><input v-model.number="breakdownAmount" type="number" min="0" :max="breakdownRemaining(e)" step="1" placeholder="0"><b>円</b></div></label>
+                    <label><span>税抜金額（税込 {{ money(draftTaxIncluded) }}／残り {{ money(breakdownRemaining(e)) }}）</span><div class="yen-input"><input v-model.number="breakdownAmount" type="number" min="0" step="1" placeholder="0"><b>円</b></div></label>
                   </div>
+                  <div class="tax-rate-field"><span>税率</span><div><button type="button" :class="{ active: breakdownTaxRate === null }" @click="breakdownTaxRate = null">なし</button><button type="button" :class="{ active: breakdownTaxRate === 8 }" @click="breakdownTaxRate = 8">8%</button><button type="button" :class="{ active: breakdownTaxRate === 10 }" @click="breakdownTaxRate = 10">10%</button></div></div>
                   <fieldset><legend>負担する人</legend><div class="chips"><button v-for="p in participants" :key="p.id" type="button" :class="{ active: breakdownParticipants.includes(p.id) }" @click="toggleBreakdownParticipant(p.id)"><span>✓</span> @{{ p.name }}</button></div></fieldset>
                   <p v-if="breakdownError" class="error">{{ breakdownError }}</p>
                   <button class="secondary" type="submit">＋ 内訳を追加</button>
